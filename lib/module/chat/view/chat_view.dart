@@ -288,6 +288,11 @@ class _WaitingChatPageState extends State<WaitingChatPage>
   }
 
   Future<void> _startMatching() async {
+    await _chatService.enterRandomQueue(
+      widget.currentUserId,
+      role: widget.role,
+    );
+
     _matchSub =
         _chatService.watchMatchedChatId(widget.currentUserId).listen(
       (chatId) {
@@ -328,10 +333,6 @@ class _WaitingChatPageState extends State<WaitingChatPage>
 
     _isMatching = true;
     try {
-      await _chatService.enterRandomQueue(
-        widget.currentUserId,
-        role: widget.role,
-      );
       await _chatService.tryMatchWithWaitingUser(
         widget.currentUserId,
         role: widget.role,

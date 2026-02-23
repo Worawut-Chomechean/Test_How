@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
@@ -112,29 +113,16 @@ class ChatUserService extends GetxService {
     if (role == MatchRole.counselor) dbRole = 'listener';
 
     final queueRef = _firestore.collection(_queueCollection).doc(userId);
-    await _firestore.runTransaction((tx) async {
-      final snap = await tx.get(queueRef);
-      final data = snap.data();
-      final status = (data?['status'] ?? '') as String;
-      final chatId = data?['chatId'];
-      final hasActiveChatId = chatId is String && chatId.isNotEmpty;
-
-      // กันเขียนทับสถานะ matched ระหว่างรอ listener อีกฝั่งรับ event
-      if (status == 'matched' && hasActiveChatId) {
-        return;
-      }
-
-      // บันทึกลง Firestore เพื่อให้ Client อื่นๆ เห็นสถานะและจับคู่ได้
-      tx.set(queueRef, {
-        'uid': userId,
-        'status': 'waiting',
-        'mode': dbRole,
-        'chatId': null,
-        'matchedWith': null,
-        'updatedAt': FieldValue.serverTimestamp(),
-        'joinedAt': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
-    });
+    // เริ่มคิวใหม่ทุกครั้ง: เคลียร์ chat เดิมทิ้งเพื่อไม่ให้เด้งกลับห้องเก่า
+    await queueRef.set({
+      'uid': userId,
+      'status': 'waiting',
+      'mode': dbRole,
+      'chatId': null,
+      'matchedWith': null,
+      'updatedAt': FieldValue.serverTimestamp(),
+      'joinedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
     
     // (Optional) อาจจะเรียก Supabase RPC เพื่อบันทึก Log การเข้าคิวได้
   }
@@ -177,6 +165,10 @@ class ChatUserService extends GetxService {
     final targetMode = (role == MatchRole.seeker) ? 'listener' : 'seeker';
 
     final myRef = _firestore.collection(_queueCollection).doc(userId);
+    final rng = Random();
+    final myQueueSnap = await myRef.get();
+    final myLastMatchedWith =
+        (myQueueSnap.data()?['lastMatchedWith'] ?? '') as String;
 
     // พยายามหาคู่ 5 ครั้ง
     for (var attempt = 0; attempt < 5; attempt++) {
@@ -189,16 +181,16 @@ class ChatUserService extends GetxService {
 
       if (waiting.docs.isEmpty) return null;
 
-      QueryDocumentSnapshot<Map<String, dynamic>>? candidate;
-      
-      // หา candidate คนแรกที่ไม่ใช่ตัวเอง
-      for (final doc in waiting.docs) {
-        if (doc.id == userId) continue; // ไม่จับคู่ตัวเอง
-        candidate = doc;
-        break;
-      }
+      final candidates = waiting.docs.where((doc) => doc.id != userId).toList();
+      if (candidates.isEmpty) return null;
 
-      if (candidate == null) return null;
+      // ถ้ามีตัวเลือกมากกว่า 1 คน ให้พยายามหลบคู่ล่าสุดก่อน
+      final preferred = List<QueryDocumentSnapshot<Map<String, dynamic>>>.from(
+        candidates,
+      )..removeWhere((doc) => doc.id == myLastMatchedWith);
+
+      final pool = preferred.isNotEmpty ? preferred : candidates;
+      final candidate = pool[rng.nextInt(pool.length)];
 
       // เจอคู่แล้ว เริ่มทำ Transaction
       final otherUserId = candidate.id;
@@ -297,6 +289,7 @@ class ChatUserService extends GetxService {
     // เคลียร์ Queue ของ User ทั้งคู่ให้ว่าง (กลับเป็น idle)
     final batch = _firestore.batch();
     for (final uid in users) {
+      final peerId = users.firstWhere((id) => id != uid, orElse: () => '');
       final queueRef = _firestore.collection(_queueCollection).doc(uid);
       batch.set(
           queueRef,
@@ -305,6 +298,7 @@ class ChatUserService extends GetxService {
             'mode': null,
             'chatId': null,
             'matchedWith': null,
+            'lastMatchedWith': peerId,
             'updatedAt': FieldValue.serverTimestamp(),
           },
           SetOptions(merge: true));
