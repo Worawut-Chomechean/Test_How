@@ -115,16 +115,30 @@ class ChatUserService extends GetxService {
     String dbRole = role.value;
     if (role == MatchRole.counselor) dbRole = 'listener';
 
-    // บันทึกลง Firestore เพื่อให้ Client อื่นๆ เห็นสถานะและจับคู่ได้
-    await _firestore.collection(_queueCollection).doc(userId).set({
-      'uid': userId,
-      'status': 'waiting',
-      'mode': dbRole,
-      'chatId': null,
-      'matchedWith': null,
-      'updatedAt': FieldValue.serverTimestamp(),
-      'joinedAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
+    final queueRef = _firestore.collection(_queueCollection).doc(userId);
+    await _firestore.runTransaction((tx) async {
+      final snap = await tx.get(queueRef);
+      final data = snap.data();
+      final status = (data?['status'] ?? '') as String;
+      final chatId = data?['chatId'];
+      final hasActiveChatId = chatId is String && chatId.isNotEmpty;
+
+      // กันเขียนทับสถานะ matched ระหว่างรอ listener อีกฝั่งรับ event
+      if (status == 'matched' && hasActiveChatId) {
+        return;
+      }
+
+      // บันทึกลง Firestore เพื่อให้ Client อื่นๆ เห็นสถานะและจับคู่ได้
+      tx.set(queueRef, {
+        'uid': userId,
+        'status': 'waiting',
+        'mode': dbRole,
+        'chatId': null,
+        'matchedWith': null,
+        'updatedAt': FieldValue.serverTimestamp(),
+        'joinedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    });
     
     // (Optional) อาจจะเรียก Supabase RPC เพื่อบันทึก Log การเข้าคิวได้
   }
