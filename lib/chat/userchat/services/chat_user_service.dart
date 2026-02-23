@@ -177,8 +177,6 @@ class ChatUserService extends GetxService {
     final targetMode = (role == MatchRole.seeker) ? 'listener' : 'seeker';
 
     final myRef = _firestore.collection(_queueCollection).doc(userId);
-    final now = DateTime.now();
-    final activeThreshold = now.subtract(const Duration(seconds: 25));
 
     // พยายามหาคู่ 5 ครั้ง
     for (var attempt = 0; attempt < 5; attempt++) {
@@ -193,23 +191,11 @@ class ChatUserService extends GetxService {
 
       QueryDocumentSnapshot<Map<String, dynamic>>? candidate;
       
-      // กรองหาคนที่ Active อยู่จริงๆ
+      // หา candidate คนแรกที่ไม่ใช่ตัวเอง
       for (final doc in waiting.docs) {
         if (doc.id == userId) continue; // ไม่จับคู่ตัวเอง
-
-        final data = doc.data();
-        final updatedAt = data['updatedAt'];
-        
-        // เช็คเวลาล่าสุด
-        if (updatedAt is Timestamp &&
-            updatedAt.toDate().isBefore(activeThreshold)) {
-          continue;
-        }
-
-        if (updatedAt == null || updatedAt is Timestamp) {
-          candidate = doc;
-          break;
-        }
+        candidate = doc;
+        break;
       }
 
       if (candidate == null) return null;
