@@ -289,21 +289,31 @@ class _WaitingChatPageState extends State<WaitingChatPage>
 
   Future<void> _startMatching() async {
     _matchSub =
-        _chatService.watchMatchedChatId(widget.currentUserId).listen((chatId) {
-      if (chatId == null || _navigatingToChat || !mounted) {
-        return;
-      }
+        _chatService.watchMatchedChatId(widget.currentUserId).listen(
+      (chatId) {
+        if (chatId == null || _navigatingToChat || !mounted) {
+          return;
+        }
 
-      _navigatingToChat = true;
-      Get.off(
-        () => ChatPage(
-          chatId: chatId,
-          currentUserId: widget.currentUserId,
-          role: widget.role, // 🟢 [อัปเดต] 2. ส่ง Role ของเราไปให้หน้าแชทรับทราบด้วย
-        ),
-        binding: UserChatBinding(),
-      );
-    });
+        _navigatingToChat = true;
+        Get.off(
+          () => ChatPage(
+            chatId: chatId,
+            currentUserId: widget.currentUserId,
+            role: widget.role, // 🟢 [อัปเดต] 2. ส่ง Role ของเราไปให้หน้าแชทรับทราบด้วย
+          ),
+          binding: UserChatBinding(),
+        );
+      },
+      onError: (e) {
+        debugPrint('watchMatchedChatId error: $e');
+        if (mounted) {
+          setState(() {
+            _statusText = 'ไม่สามารถเข้าถึงข้อมูลแชทได้';
+          });
+        }
+      },
+    );
 
     await _attemptMatchCycle();
     _retryTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
