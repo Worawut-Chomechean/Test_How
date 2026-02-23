@@ -2,9 +2,7 @@ import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 
-// ✅ Import Supabase Client (ตรวจสอบ path ให้ถูกต้องตามโปรเจกต์ของคุณ)
 import 'package:flutter_application_1/chat/userchat/models/usermessage.model.dart';
 
 // ✅ แก้ Enum ให้ตรงกับที่ Controller ส่งมา
@@ -22,8 +20,6 @@ enum MatchRole {
 
 class ChatUserService extends GetxService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  // ✅ ใช้ตัวแปร supabase จาก supabase_client.dart หรือเรียก Supabase.instance.client โดยตรง
-  final SupabaseClient _supabase = Supabase.instance.client;
 
   static const String _chatCollection = 'Chats';
   static const String _queueCollection = 'RandomQueue';
@@ -232,11 +228,15 @@ class ChatUserService extends GetxService {
 
           final myData = mySnap.data();
           final otherData = otherSnap.data();
+          final otherMode = (otherData?['mode'] ?? '') as String;
 
           // ตรวจสอบสถานะล่าสุดอีกครั้งใน Transaction (กัน Race Condition)
           if ((myData?['status'] ?? '') != 'waiting' ||
               (otherData?['status'] ?? '') != 'waiting') {
             throw StateError('queue changed');
+          }
+          if (otherMode != targetMode) {
+            throw StateError('role changed');
           }
 
           // สร้างห้องแชท
@@ -249,7 +249,7 @@ class ChatUserService extends GetxService {
                 'randomState': 'active',
                 'createdAt': FieldValue.serverTimestamp(),
                 'updatedAt': FieldValue.serverTimestamp(),
-                'supaSessionId': null, // เดี๋ยวมาเติมหลังจากสร้างใน Supabase เสร็จ
+                'sessionId': chatId,
               },
               SetOptions(merge: true));
 
@@ -278,15 +278,6 @@ class ChatUserService extends GetxService {
               SetOptions(merge: true));
         });
 
-        // ✅ 3.1 สร้าง Session ใน Supabase (หลังจากจับคู่สำเร็จใน Firebase)
-        // เพื่อใช้เก็บสถิติและคำนวณเหรียญ
-        _createSupabaseSession(
-          chatId: chatId,
-          myUserId: userId,
-          otherUserId: otherUserId,
-          myRole: myDbRole,
-        );
-
         return chatId;
       } catch (_) {
         continue; // ถ้า Transaction ล้มเหลว ให้ลองใหม่
@@ -294,43 +285,6 @@ class ChatUserService extends GetxService {
     }
 
     return null;
-  }
-
-  // Helper: สร้าง Session ใน Supabase และนำ ID กลับมาแปะใน Firebase
-  Future<void> _createSupabaseSession({
-    required String chatId,
-    required String myUserId,
-    required String otherUserId,
-    required String myRole,
-  }) async {
-    try {
-      final seekerId = (myRole == 'seeker') ? myUserId : otherUserId;
-      final listenerId = (myRole == 'seeker') ? otherUserId : myUserId;
-
-      // Insert ลงตาราง chat_sessions
-      final response = await _supabase
-          .from('chat_sessions')
-          .insert({
-            'seeker_id': seekerId,
-            'listener_id': listenerId,
-            'status': 'active',
-            'started_at': DateTime.now().toUtc().toIso8601String(),
-          })
-          .select('id')
-          .single();
-
-      final supaSessionId = response['id'].toString();
-
-      // อัปเดต Firestore ว่าห้องนี้ผูกกับ Session ไหนใน Supabase
-      await _firestore.collection(_chatCollection).doc(chatId).update({
-        'supaSessionId': supaSessionId,
-      });
-      
-      debugPrint("✅ Supabase Session Created: $supaSessionId");
-    } catch (e) {
-      debugPrint("❌ Create Supabase Session Error: $e");
-      // ไม่ throw error เพื่อให้การแชทดำเนินต่อไปได้แม้ Supabase จะมีปัญหาชั่วคราว
-    }
   }
 
   // ----------------------------------------------------------------
@@ -375,28 +329,33 @@ class ChatUserService extends GetxService {
     // หรือปล่อยให้เป็นหน้าที่ของ Admin script ก็ได้
   }
 
-  // ✅ ฟังก์ชันใหม่: ส่ง Feedback + จำนวนคำ ไปยัง Supabase (เพื่อรับเหรียญ)
+  // บันทึก Feedback ลง Firestore
   Future<void> submitFeedback({
-    required String sessionId, // ต้องใช้ ID ของ Supabase (supaSessionId)
+    required String sessionId,
+    required String chatId,
+    required String fromUserId,
+    required String toUserId,
+    required String fromRole,
+    required String toRole,
     required int rating,
     required String comment,
     required bool starred,
-    required int wordCount, // รับค่าจำนวนคำที่นับได้จาก Frontend
+    required int wordCount,
   }) async {
-    try {
-      // เรียก RPC ใน Supabase (SQL ที่อัปเดตไปล่าสุด)
-      await _supabase.rpc('submit_feedback_and_reward', params: {
-        'p_session_id': sessionId,
-        'p_rating': rating,
-        'p_comment': comment,
-        'p_starred': starred,
-        'p_word_count': wordCount,
-      });
-      debugPrint("✅ Feedback & Reward Submitted (Words: $wordCount)");
-    } catch (e) {
-      debugPrint("❌ Feedback Error: $e");
-      rethrow;
-    }
+    await _firestore.collection('ChatFeedback').add({
+      'sessionId': sessionId,
+      'chatId': chatId,
+      'fromUserId': fromUserId,
+      'toUserId': toUserId,
+      'fromRole': fromRole,
+      'toRole': toRole,
+      'rating': rating,
+      'comment': comment,
+      'starred': starred,
+      'wordCount': wordCount,
+      'createdAt': FieldValue.serverTimestamp(),
+    });
+    debugPrint("✅ Feedback saved to Firestore (Words: $wordCount)");
   }
 
   // ----------------------------------------------------------------

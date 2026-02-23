@@ -1,16 +1,13 @@
 import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
 import 'package:flutter_application_1/chat/userchat/bindings/chat_binding.dart';
 import 'package:flutter_application_1/chat/userchat/services/chat_user_service.dart';
 import 'package:flutter_application_1/module/login/view/login.dart';
-import 'package:flutter_application_1/supabase_client.dart';
-
-// 🟢 [อัปเดต] 1. Import ไฟล์ Model และ API ที่เราสร้างไว้ (แก้ Path ให้ตรงกับโปรเจกต์คุณ)
-import 'package:flutter_application_1/session_feedback_api.dart'; 
 
 Color withAlpha(Color color, double opacity) {
   final alpha = (opacity.clamp(0.0, 1.0) * 255).round();
@@ -19,14 +16,14 @@ Color withAlpha(Color color, double opacity) {
 
 class ChatSelectionController extends GetxController {
   void goToStartChat() {
-    final user = supabase.auth.currentUser;
+    final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
       Get.offAll(() => const LoginPage());
       return;
     }
     Get.to(
       () => WaitingChatPage(
-        currentUserId: user.id,
+        currentUserId: user.uid,
         role: MatchRole.seeker,
       ),
       binding: UserChatBinding(),
@@ -34,14 +31,14 @@ class ChatSelectionController extends GetxController {
   }
 
   void goToCounseling() {
-    final user = supabase.auth.currentUser;
+    final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
       Get.offAll(() => const LoginPage());
       return;
     }
     Get.to(
       () => WaitingChatPage(
-        currentUserId: user.id,
+        currentUserId: user.uid,
         role: MatchRole.listener,
       ),
       binding: UserChatBinding(),
@@ -586,9 +583,6 @@ class _ChatPageState extends State<ChatPage> {
   final TextEditingController _comentController = TextEditingController();
 
   late final ChatUserService _chatService;
-  
-  // 🟢 [อัปเดต] 4. ประกาศใช้งาน API Service ที่เราสร้างไว้
-  final FeedbackApiService _feedbackApi = FeedbackApiService();
 
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _chatDocSub;
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _queueSub;
@@ -736,7 +730,6 @@ class _ChatPageState extends State<ChatPage> {
     }
   }
 
-  // 🟢 [อัปเดต] 5. เปลี่ยนมาใช้ API ยิงเข้า Supabase แทน
   Future<void> _submitFeedback() async {
     if (_sendingFeedback) return;
 
@@ -758,25 +751,16 @@ class _ChatPageState extends State<ChatPage> {
           .doc(widget.chatId)
           .get();
       final sessionId =
-          (chatMeta.data()?['supaSessionId'] as String?)?.trim().isNotEmpty == true
-              ? (chatMeta.data()?['supaSessionId'] as String)
+          (chatMeta.data()?['sessionId'] as String?)?.trim().isNotEmpty == true
+              ? (chatMeta.data()?['sessionId'] as String)
               : widget.chatId;
 
-      // 🟢 นำ Token จากระบบ Auth ของ Supabase ของ User ที่ล็อกอินอยู่
-      final session = supabase.auth.currentSession;
-      if (session == null) {
-        throw Exception('กรุณาล็อกอิน Supabase ก่อนให้ฟีดแบ็ก');
-      }
-      final userToken = session.accessToken;
-
-      // 🟢 กำหนด Role ว่าเราเป็นใคร และคู่สนทนาเป็นใคร 
-      // เพื่อให้ตรงกับเงื่อนไขใน Database (seeker / listener)
       String myRoleStr = widget.role == MatchRole.seeker ? 'seeker' : 'listener';
       String peerRoleStr = widget.role == MatchRole.seeker ? 'listener' : 'seeker';
 
-      // 🟢 จัดเตรียมข้อมูลใส่ Model ของเรา
-      final newFeedback = SessionFeedback(
+      await _chatService.submitFeedback(
         sessionId: sessionId,
+        chatId: widget.chatId,
         fromUserId: widget.currentUserId,
         toUserId: _recipientUserId,
         fromRole: myRoleStr,
@@ -787,20 +771,9 @@ class _ChatPageState extends State<ChatPage> {
         wordCount: _sessionWordCount,
       );
 
-      // 🟢 ยิง API
-      final result = await _feedbackApi.createFeedback(newFeedback, userToken);
-
       if (!mounted) return;
-
-      if (result != null) {
-        debugPrint('ส่งฟีดแบ็คสำเร็จผ่าน API!');
-        setState(() => _showFeedback = false); // ปิดหน้าต่างให้คะแนน
-        // Get.back(); // เปิดคอมเมนต์นี้ถ้าอยากให้ออกจากหน้าแชทไปด้วยเลย
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('เกิดข้อผิดพลาดในการส่งข้อมูลฟีดแบ็ก')),
-        );
-      }
+      debugPrint('ส่งฟีดแบ็คสำเร็จผ่าน Firestore!');
+      setState(() => _showFeedback = false);
     } catch (e) {
       debugPrint("Failed to submit feedback: $e");
       if (mounted) {
