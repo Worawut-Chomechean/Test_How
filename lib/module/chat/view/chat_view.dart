@@ -331,12 +331,6 @@ class _WaitingChatPageState extends State<WaitingChatPage>
       return;
     }
 
-    // ให้ seeker เป็นฝั่ง initiate การจับคู่เพียงฝั่งเดียว
-    // listener จะเข้าคิวและรอรับ matched chatId อย่างเดียว
-    if (widget.role == MatchRole.listener) {
-      return;
-    }
-
     _isMatching = true;
     try {
       await _chatService.tryMatchWithWaitingUser(
