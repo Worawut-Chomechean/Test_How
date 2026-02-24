@@ -331,6 +331,12 @@ class _WaitingChatPageState extends State<WaitingChatPage>
       return;
     }
 
+    // ให้ seeker เป็นฝั่ง initiate การจับคู่เพียงฝั่งเดียว
+    // listener จะเข้าคิวและรอรับ matched chatId อย่างเดียว
+    if (widget.role == MatchRole.listener) {
+      return;
+    }
+
     _isMatching = true;
     try {
       await _chatService.tryMatchWithWaitingUser(
@@ -888,14 +894,24 @@ class _ChatPageState extends State<ChatPage> {
                   .collection('Chats')
                   .doc(widget.chatId)
                   .collection('messages')
-                  .orderBy('timestamp')
                   .snapshots(),
               builder: (context, snapshot) {
                 if (snapshot.connectionState == ConnectionState.waiting) {
                   return const Center(child: CircularProgressIndicator());
                 }
 
-                final docs = snapshot.data?.docs ?? const [];
+                final docs = [...(snapshot.data?.docs ?? const [])]
+                  ..sort((a, b) {
+                    final ad = a.data() as Map<String, dynamic>;
+                    final bd = b.data() as Map<String, dynamic>;
+                    final at = (ad['localTimestamp'] ?? ad['timestamp']);
+                    final bt = (bd['localTimestamp'] ?? bd['timestamp']);
+                    final aMs =
+                        at is Timestamp ? at.millisecondsSinceEpoch : 0;
+                    final bMs =
+                        bt is Timestamp ? bt.millisecondsSinceEpoch : 0;
+                    return aMs.compareTo(bMs);
+                  });
                 if (docs.isEmpty) {
                   return const Center(
                     child: Text(

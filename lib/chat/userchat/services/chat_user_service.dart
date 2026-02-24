@@ -34,13 +34,13 @@ class ChatUserService extends GetxService {
         .collection(_chatCollection)
         .doc(chatId)
         .collection('messages')
-        .orderBy('timestamp', descending: true)
+        .orderBy('localTimestamp', descending: true)
         .limit(1)
         .snapshots()
         .map((snapshot) {
       if (snapshot.docs.isEmpty) return null;
       final data = snapshot.docs.first.data();
-      final timestamp = data['timestamp'];
+      final timestamp = data['localTimestamp'] ?? data['timestamp'];
       if (timestamp is! Timestamp) return null;
 
       return UserMessage(
@@ -87,6 +87,8 @@ class ChatUserService extends GetxService {
       'senderId': currentUserId,
       'receiverId': recipientUserId ?? '',
       'text': text,
+      // ให้มีเวลา client เสมอ เพื่อกันเอกสารถูกมองข้ามตอน orderBy
+      'localTimestamp': Timestamp.now(),
       'timestamp': FieldValue.serverTimestamp(),
       'isRead': false,
     });
