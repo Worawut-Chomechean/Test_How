@@ -1,10 +1,24 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
+import 'package:http/http.dart' as http;
 
 import 'package:flutter_application_1/chat/userchat/models/usermessage.model.dart';
+
+enum SendMessageStatus { sent, blocked, skipped }
+
+class SendMessageResult {
+  const SendMessageResult({
+    required this.status,
+    this.reason,
+  });
+
+  final SendMessageStatus status;
+  final String? reason;
+}
 
 // ✅ แก้ Enum ให้ตรงกับที่ Controller ส่งมา
 enum MatchRole {
@@ -24,6 +38,11 @@ class ChatUserService extends GetxService {
 
   static const String _chatCollection = 'Chats';
   static const String _queueCollection = 'RandomQueue';
+  static const String _n8nModerationWebhook = String.fromEnvironment(
+    'N8N_MODERATION_WEBHOOK',
+    defaultValue: 'https://n8n.tgstack.dev/webhook/HowAreYou',
+  );
+  static const Duration _moderationTimeout = Duration(seconds: 6);
 
   // ----------------------------------------------------------------
   // 1. Firebase Basic Chat Operations (รับ-ส่งข้อความ)
@@ -67,7 +86,7 @@ class ChatUserService extends GetxService {
     return chatRoomId;
   }
 
-  Future<void> sendMessage(
+  Future<SendMessageResult> sendMessage(
     String chatId,
     String currentUserId,
     String message,
@@ -75,9 +94,28 @@ class ChatUserService extends GetxService {
     String? recipientUserId,
   ) async {
     final text = message.trim();
-    if (text.isEmpty) return;
+    if (text.isEmpty) {
+      return const SendMessageResult(status: SendMessageStatus.skipped);
+    }
 
-    messageController.clear();
+    final moderation = await _moderateMessage(
+      chatId: chatId,
+      senderId: currentUserId,
+      receiverId: recipientUserId ?? '',
+      text: text,
+    );
+
+    if (!moderation.allow) {
+      messageController.clear();
+      return SendMessageResult(
+        status: SendMessageStatus.blocked,
+        reason: moderation.reason,
+      );
+    }
+
+    final safeText = moderation.safeText.trim().isNotEmpty
+        ? moderation.safeText.trim()
+        : text;
 
     await _firestore
         .collection(_chatCollection)
@@ -86,12 +124,87 @@ class ChatUserService extends GetxService {
         .add({
       'senderId': currentUserId,
       'receiverId': recipientUserId ?? '',
-      'text': text,
+      'text': safeText,
       // ให้มีเวลา client เสมอ เพื่อกันเอกสารถูกมองข้ามตอน orderBy
       'localTimestamp': Timestamp.now(),
       'timestamp': FieldValue.serverTimestamp(),
       'isRead': false,
     });
+
+    messageController.clear();
+    return const SendMessageResult(status: SendMessageStatus.sent);
+  }
+
+  Future<_ModerationResult> _moderateMessage({
+    required String chatId,
+    required String senderId,
+    required String receiverId,
+    required String text,
+  }) async {
+    if (_n8nModerationWebhook.trim().isEmpty) {
+      return _ModerationResult.allow(text);
+    }
+
+    try {
+      final response = await http
+          .post(
+            Uri.parse(_n8nModerationWebhook),
+            headers: const {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'chatId': chatId,
+              'senderId': senderId,
+              'receiverId': receiverId,
+              'message': text,
+              'timestamp': DateTime.now().toUtc().toIso8601String(),
+            }),
+          )
+          .timeout(_moderationTimeout);
+
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        return const _ModerationResult.block('moderation-http-error');
+      }
+
+      if (response.body.trim().isEmpty) {
+        return const _ModerationResult.block('moderation-empty-response');
+      }
+
+      final decoded = jsonDecode(response.body);
+      if (decoded is! Map) {
+        return const _ModerationResult.block('moderation-invalid-response');
+      }
+      final payload = Map<String, dynamic>.from(decoded);
+
+      final status = (payload['status'] ?? '').toString().trim().toLowerCase();
+      final explicitProfanity = payload['isProfane'] == true;
+      final cleanMessage =
+          (payload['cleanMessage'] ?? payload['message'] ?? '')
+              .toString()
+              .trim();
+
+      if (explicitProfanity ||
+          status == 'block' ||
+          status == 'blocked' ||
+          status == 'reject') {
+        return const _ModerationResult.block('moderation-blocked');
+      }
+
+      if (status == 'mask') {
+        final masked = cleanMessage.isNotEmpty ? cleanMessage : text;
+        return _ModerationResult.allow(masked);
+      }
+
+      if (status == 'allow' || status == 'allowed' || status == 'ok') {
+        final safeText = cleanMessage.isNotEmpty ? cleanMessage : text;
+        return _ModerationResult.allow(safeText);
+      }
+
+      return const _ModerationResult.block('moderation-unknown-status');
+    } on TimeoutException {
+      return const _ModerationResult.block('moderation-timeout');
+    } catch (e) {
+      debugPrint('n8n moderation failed: $e');
+      return const _ModerationResult.block('moderation-request-failed');
+    }
   }
 
   Future<void> deleteMessage(String chatId, String messageId) async {
@@ -372,4 +485,27 @@ class ChatUserService extends GetxService {
     // ลบห้องแชททิ้งท้าย
     await _firestore.collection(_chatCollection).doc(chatId).delete();
   }
+}
+
+class _ModerationResult {
+  const _ModerationResult({
+    required this.allow,
+    required this.safeText,
+    required this.reason,
+  });
+
+  factory _ModerationResult.allow(String text) => _ModerationResult(
+        allow: true,
+        safeText: text,
+        reason: '',
+      );
+
+  const _ModerationResult.block(String reasonCode)
+      : allow = false,
+        safeText = '',
+        reason = reasonCode;
+
+  final bool allow;
+  final String safeText;
+  final String reason;
 }

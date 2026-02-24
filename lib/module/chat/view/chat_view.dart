@@ -601,6 +601,7 @@ class _ChatPageState extends State<ChatPage> {
   String _recipientUserId = '';
   bool _endingConversation = false;
   bool _exitingByRemoteEnd = false;
+  bool _sendingMessage = false;
 
   // feedback
   bool _showFeedback = false;
@@ -691,17 +692,33 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   Future<void> _sendMessage() async {
-    if (_textController.text.trim().isEmpty) return;
+    if (_sendingMessage || _textController.text.trim().isEmpty) return;
 
-    await _chatService.sendMessage(
-      widget.chatId,
-      widget.currentUserId,
-      _textController.text,
-      _textController,
-      _recipientUserId,
-    );
+    setState(() => _sendingMessage = true);
 
-    if (mounted) setState(() {});
+    try {
+      final result = await _chatService.sendMessage(
+        widget.chatId,
+        widget.currentUserId,
+        _textController.text,
+        _textController,
+        _recipientUserId,
+      );
+
+      if (!mounted) return;
+
+      if (result.status == SendMessageStatus.blocked) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('ข้อความไม่สุภาพ ระบบจึงลบข้อความให้แล้ว')),
+        );
+      }
+
+      setState(() {});
+    } finally {
+      if (mounted) {
+        setState(() => _sendingMessage = false);
+      }
+    }
   }
 
   int _calculateWordCount(List<DocumentSnapshot> docs) {
@@ -999,6 +1016,7 @@ class _ChatPageState extends State<ChatPage> {
                   Expanded(
                     child: TextField(
                       controller: _textController,
+                      enabled: !_sendingMessage,
                       onSubmitted: (_) => _sendMessage(),
                       decoration: const InputDecoration(
                         hintText: 'ส่งข้อความ.......',
@@ -1009,14 +1027,16 @@ class _ChatPageState extends State<ChatPage> {
                     ),
                   ),
                   GestureDetector(
-                    onTap: _sendMessage,
+                    onTap: _sendingMessage ? null : _sendMessage,
                     child: Padding(
                       padding: const EdgeInsets.only(right: 15),
                       child: Transform.rotate(
                         angle: -0.5,
-                        child: const Icon(
+                        child: Icon(
                           Icons.send,
-                          color: Color(0xFF6F6F6F),
+                          color: _sendingMessage
+                              ? const Color(0xFF9E9E9E)
+                              : const Color(0xFF6F6F6F),
                           size: 28,
                         ),
                       ),
