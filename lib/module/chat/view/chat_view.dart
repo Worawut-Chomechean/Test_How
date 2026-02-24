@@ -784,7 +784,7 @@ class _ChatPageState extends State<ChatPage> {
 
       if (!mounted) return;
       debugPrint('ส่งฟีดแบ็คสำเร็จผ่าน Firestore!');
-      setState(() => _showFeedback = false);
+      _exitToPreMatchScreen();
     } catch (e) {
       debugPrint("Failed to submit feedback: $e");
       if (mounted) {
@@ -795,6 +795,20 @@ class _ChatPageState extends State<ChatPage> {
     } finally {
       if (mounted) setState(() => _sendingFeedback = false);
     }
+  }
+
+  void _exitToPreMatchScreen() {
+    _chatDocSub?.cancel();
+    _queueSub?.cancel();
+
+    if (!mounted) return;
+
+    if (Navigator.of(context).canPop()) {
+      Navigator.of(context).pop();
+      return;
+    }
+
+    Get.offAll(() => const ChatSelectionPage());
   }
 
   @override
@@ -1059,12 +1073,10 @@ class _ChatPageState extends State<ChatPage> {
                 ),
               ),
           
-             TextButton(
-        onPressed: _sendingFeedback
-            ? null
-             : () => setState(() => _showFeedback = false),
-           child: const Text('ข้าม')
-            ),
+              TextButton(
+                onPressed: _sendingFeedback ? null : _exitToPreMatchScreen,
+                child: const Text('ข้าม'),
+              ),
               const SizedBox(height: 20),
               TextField(
                 controller: _comentController,
